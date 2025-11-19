@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
+
+ccflags-y 			+= -I$(src)
+
 obj-$(CONFIG_UIO)	+= uio.o
+uio-objs 			:= main.o dmabuf.o
 obj-$(CONFIG_UIO_CIF)	+= uio_cif.o
 obj-$(CONFIG_UIO_PDRV_GENIRQ)	+= uio_pdrv_genirq.o
 obj-$(CONFIG_UIO_DMEM_GENIRQ)	+= uio_dmem_genirq.o

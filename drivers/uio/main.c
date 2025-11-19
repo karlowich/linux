@@ -26,6 +26,10 @@
 #include <linux/uio_driver.h>
 #include <linux/dma-mapping.h>
 
+#include <uapi/linux/uio_driver.h>
+
+#include "dmabuf.h"
+
 #define UIO_MAX_DEVICES		(1U << MINORBITS)
 
 static int uio_major;
@@ -876,6 +880,101 @@ static int uio_mmap(struct file *filep, struct vm_area_struct *vma)
 	return ret;
 }
 
+static long _uio_attach_dma_buf(struct file *filep,
+                                struct uio_attach_dma_buf __user *uattach)
+{
+	struct uio_listener *listener = filep->private_data;
+	struct uio_device *idev = listener->dev;
+	struct device *dev = &idev->dev;
+	struct uio_attach_dma_buf attach;
+	struct uio_dma_buf_desc *desc;
+	int ret;
+
+	if (copy_from_user(&attach, uattach, sizeof(attach)))
+		return -EFAULT;
+
+	ret = uio_attach_dma_buf(&desc, attach.fd, dev, DMA_BIDIRECTIONAL);
+	if (ret) 
+		return ret;
+
+	attach.count = desc->sgt->nents;
+
+	if (copy_to_user(uattach, &attach, sizeof(attach)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static long _uio_detach_dma_buf(struct file *filep, int __user *ufd)
+{
+	struct uio_dma_buf_desc *desc;
+	int fd;
+
+	if (copy_from_user(&fd, ufd, sizeof(fd)))
+		return -EFAULT;
+
+	desc = uio_get_dma_buf_desc(fd);
+	if (IS_ERR(desc))
+		return PTR_ERR(desc);
+
+	uio_detach_dma_buf(desc);
+	return 0;
+}
+
+static long _uio_get_dma_map(struct file *filep,
+                             struct uio_get_dma_map __user *uget_map)
+{
+	struct uio_dma_buf_desc *desc;
+	struct uio_get_dma_map get_map;
+	struct uio_dma_map map;
+	struct uio_dma_map __user *umap;
+	struct scatterlist *sg;
+	int i;
+
+	if (copy_from_user(&get_map, uget_map, sizeof(get_map)))
+		return -EFAULT;
+	
+	desc = uio_get_dma_buf_desc(get_map.fd);
+	if (IS_ERR(desc))
+		return PTR_ERR(desc);
+
+	umap = uget_map->dma_arr;
+	for_each_sgtable_dma_sg(desc->sgt, sg, i) {
+		if (i > get_map.count)
+			break;
+
+		map.dma_addr = sg_dma_address(sg);
+		map.dma_len = sg_dma_len(sg);
+		if (copy_to_user(umap + i, &map, sizeof(map)))
+			return -EFAULT;
+	}
+
+	return 0;
+}
+
+static long uio_ioctl(struct file *filep, unsigned int ioctl,
+                      unsigned long arg)
+{
+	long ret;
+	void __user *argp = (void __user *)arg;
+
+	switch (ioctl) {
+	case UIO_ATTACH_DMA_BUF:
+		ret = _uio_attach_dma_buf(filep, argp);
+		break;
+	case UIO_DETACH_DMA_BUF:
+		ret = _uio_detach_dma_buf(filep, argp);
+		break;
+	case UIO_GET_DMA_MAP:
+		ret = _uio_get_dma_map(filep, argp);
+		break;
+	default:
+		ret = -ENOTTY;
+		break;
+	}
+	return ret;
+}
+
 static const struct file_operations uio_fops = {
 	.owner		= THIS_MODULE,
 	.open		= uio_open,
@@ -886,6 +985,7 @@ static const struct file_operations uio_fops = {
 	.poll		= uio_poll,
 	.fasync		= uio_fasync,
 	.llseek		= noop_llseek,
+	.unlocked_ioctl = uio_ioctl,
 };
 
 static int uio_major_init(void)
@@ -1013,6 +1113,8 @@ int __uio_register_device(struct module *owner,
 	idev->dev.class = &uio_class;
 	idev->dev.parent = parent;
 	idev->dev.release = uio_device_release;
+	idev->dev.dma_mask = parent->dma_mask;
+	idev->dev.coherent_dma_mask = parent->coherent_dma_mask;
 	dev_set_drvdata(&idev->dev, idev);
 
 	ret = dev_set_name(&idev->dev, "uio%d", idev->minor);
@@ -1147,3 +1249,4 @@ module_init(uio_init)
 module_exit(uio_exit)
 MODULE_DESCRIPTION("Userspace IO core module");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("DMA_BUF");
